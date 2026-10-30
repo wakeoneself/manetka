@@ -1,0 +1,48 @@
+{
+  "xray": {
+    "amd64": {
+      "url": "https://github.com/XTLS/Xray-core/releases/download/v26.10.21/Xray-linux-64.zip",
+      "sha256": "0eec3ed4163c273d8c8bf821f7d219e257921cf584aa3fb970715e458e631978",
+      "version": "v26.10.21"
+    },
+    "arm64": {
+      "url": "https://github.com/XTLS/Xray-core/releases/download/v26.10.21/Xray-linux-arm64-v8a.zip",
+      "sha256": "d1304946c486d98e6b886e9b931eaaaebb23835b30e217638037b7f2721d4e9c",
+      "version": "v26.10.21"
+    }
+  },
+  "caddy": {
+    "amd64": {
+      "url": "https://github.com/caddyserver/caddy/releases/download/v2.11.7/caddy_2.11.7_linux_amd64.tar.gz",
+      "sha256": "727b91701a392de6ebc5027509f548bf39979e5216340d0faed8fa5e69c84f8b",
+      "version": "v2.11.7"
+    },
+    "arm64": {
+      "url": "https://github.com/caddyserver/caddy/releases/download/v2.11.7/caddy_2.11.7_linux_arm64.tar.gz",
+      "sha256": "d8fc6d179a5d283028a472a5618564f6ad8a86fed513e64f032b3b0b7cc45e42",
+      "version": "v2.11.7"
+    }
+  },
+  "awg-go": {
+    "url": "https://codeload.github.com/amnezia-vpn/amneziawg-go/tar.gz/b5928efb6ca19f0153958460c3d141f04abc5c2e",
+    "sha256": "10bf7458e090bf52f87df27adcd3904a60e4d17fab844d9415e46379147f1ab4",
+    "version": "b5928efb6ca19f0153958460c3d141f04abc5c2e"
+  },
+  "awg-tools": {
+    "url": "https://codeload.github.com/amnezia-vpn/amneziawg-tools/tar.gz/ee0f0a9aa34ff0a0da4b3433b9512781cfe02843",
+    "sha256": "22438f231d39ea27e4bdc69707ec3103357f3cecc9ad3eecba18a61e5b39c9b9",
+    "version": "ee0f0a9aa34ff0a0da4b3433b9512781cfe02843"
+  },
+  "go": {
+    "amd64": {
+      "url": "https://go.dev/dl/go1.27.3.linux-amd64.tar.gz",
+      "sha256": "65efbc80fdc1fa2cd2631cad5b481777a68e8725f34e89f50fc6ac714e379b40",
+      "version": "go1.27.3"
+    },
+    "arm64": {
+      "url": "https://go.dev/dl/go1.27.3.linux-arm64.tar.gz",
+      "sha256": "a06e99309dbcbdca1a8ccd2282c3ee146e55930886e26b4f1193269587165f49",
+      "version": "go1.27.3"
+    }
+  }
+}
