@@ -122,6 +122,6 @@ export class Vault {
   }
   async publicState(busy?: string): Promise<PublicState> {
     if (!this.data) return {exists:await this.exists(),locked:true,profiles:[],sshKeys:[],autoLockMinutes:5,audit:[],busy}
-    return {exists:true,locked:false,activeProfileId:this.data.activeProfileId,autoLockMinutes:this.data.autoLockMinutes,audit:this.data.audit,busy,sshKeys:this.data.sshKeys.map(({privateKey,passphrase,...key})=>{const uses=keyUses(this.data!,key.id);return {...key,encrypted:!!passphrase,uses,canDelete:uses.length===0}}),profiles:this.data.profiles.map(p=>({...p,servers:p.servers.map(({credential,protocols,...s})=>({...s,authType:credential.type,sshKeyId:credential.keyId,protocols:Object.fromEntries(Object.entries(protocols).map(([k,{privateKey,...settings}])=>[k,settings]))})),configs:p.configs.map(({content,publicKey,clientId,...c})=>c)}))}
+    return {exists:true,locked:false,activeProfileId:this.data.activeProfileId,autoLockMinutes:this.data.autoLockMinutes,audit:this.data.audit,busy,sshKeys:this.data.sshKeys.map(({privateKey,passphrase,...key})=>{const uses=keyUses(this.data!,key.id);return {...key,encrypted:!!passphrase,uses,canDelete:uses.length===0}}),profiles:this.data.profiles.map(p=>({...p,servers:p.servers.map(({credential,protocols,...s})=>({...s,authType:credential.type,sshKeyId:credential.keyId,protocols:Object.fromEntries(Object.entries(protocols).map(([k,{privateKey,obfs,...settings}])=>[k,settings]))})),configs:p.configs.map(({content,publicKey,clientId,secret,...c})=>c)}))}
   }
 }

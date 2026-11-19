@@ -83,7 +83,6 @@ test('password hardening journals and protects a key before remote IO; a retry r
   assert(!(await readFile(vault.path,'utf8')).includes('PRIVATE KEY'))
   vault.lock();await vault.unlock(password);server=vault.require().profiles[0].servers[0]
   await assert.rejects(controller.deleteSSHKey(id),/Нельзя удалить/)
-  await assert.rejects(controller.deleteServer(server.id,server.host,false),/очистите/)
   const scripts:string[]=[]
   controller.withServer=async(_s,fn)=>fn({exec:async(script:string)=>{scripts.push(script);return ''}} as never)
   await controller.secureCredential(server)
@@ -92,6 +91,11 @@ test('password hardening journals and protects a key before remote IO; a retry r
   assert(scripts[0].includes('/etc/manetka/owner'));assert(scripts[0].includes('authorized_keys'))
   execFileSync('sh',['-n'],{input:scripts[0]})
   await assert.rejects(controller.deleteSSHKey(id),/Нельзя удалить/)
+  // Local-only deletion needs no SSH access, even for a managed server.
+  controller.withServer=async()=>{throw new Error('must not connect')}
+  await assert.rejects(controller.deleteServer(server.id,'wrong',false),/повторите IP/)
+  await controller.deleteServer(server.id,server.host,false)
+  assert.equal(vault.require().profiles[0].servers.length,0)
  })
 })
 

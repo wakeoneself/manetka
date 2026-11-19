@@ -121,7 +121,7 @@ async function execute(method:string,args:unknown[]) {
       case 'revealConfig': {const c=controller.config(idSchema.parse(args[0]));if(c.revoked)throw new Error('Конфиг отозван');return c.content}
       case 'exportConfig': {
         const c=controller.config(idSchema.parse(args[0]));if(c.revoked)throw new Error('Конфиг отозван')
-        const ext=c.protocol.startsWith('vless')?'txt':'conf'
+        const ext=['wireguard','amneziawg'].includes(c.protocol)?'conf':'txt'
         const file=await dialog.showSaveDialog(win,{title:'Сохранить конфиг с приватным ключом',defaultPath:c.name.replace(/[^\p{L}\p{N} _-]/gu,'_')+'.'+ext,filters:[{name:'VPN config',extensions:[ext]}]})
         if(file.canceled||!file.filePath)return false
         await writeFile(file.filePath,c.content,{mode:0o600});return true

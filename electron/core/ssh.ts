@@ -4,6 +4,7 @@ const { Client } = ssh2
 import { createHash, randomUUID } from 'node:crypto'
 import { resolveCredential } from './ssh-keys'
 import { InstallerOutput } from './install-output'
+import { shellQuote } from './validation'
 import type { Progress, Server, SSHKey } from '../../src/model'
 
 export const fingerprint = (key: Buffer) => 'SHA256:' + createHash('sha256').update(key).digest('base64').replace(/=+$/,'')
@@ -27,7 +28,19 @@ export async function connect(server: Server, keys: SSHKey[] = [], log?: (event:
     const finish=(success:boolean)=>{if(settled)return false;settled=true;clearInterval(heartbeat);emit({event:'command',step:'SSH-подключение',detail:success?'Соединение установлено':'Соединение не установлено',kind:success?'ok':'error',state:success?'done':'failed'});return true}
     conn.on('error',e=>{if(finish(false))reject(new Error(mismatch ? 'SSH-ключ изменился. Сверьте fingerprint с панелью провайдера.' : 'Ошибка SSH: '+e.message))})
     conn.on('close',()=>{if(finish(false))reject(new Error('SSH-соединение закрыто до завершения аутентификации'))})
-    conn.on('ready',()=>{if(finish(true))resolve(new Remote(conn,log))})
+    conn.on('ready',()=>{
+      const remote=new Remote(conn,log,server.username)
+      if(server.username==='root'){if(finish(true))resolve(remote);return}
+      // Non-root accounts must have passwordless sudo: every provisioning command needs root.
+      conn.exec('sudo -n true',(error,stream)=>{
+        if(error){if(finish(false)){reject(new Error('Не удалось проверить sudo'));conn.end()};return}
+        stream.resume();stream.stderr.resume()
+        stream.on('close',(code:number)=>{
+          if(code===0){if(finish(true))resolve(remote)}
+          else if(finish(false)){reject(new Error(`Пользователю ${server.username} нужен sudo без пароля (NOPASSWD). Добавьте его в sudoers или используйте root.`));conn.end()}
+        })
+      })
+    })
     try{conn.connect({host:server.host,port:server.port,username:server.username,readyTimeout:20000,keepaliveInterval:10000,keepaliveCountMax:3,
       hostVerifier:(key:Buffer)=>{ mismatch=fingerprint(key)!==server.fingerprint; return !mismatch },
       ...(credential.type==='key' ? {privateKey:credential.privateKey,passphrase:credential.passphrase} : {password:credential.password})})}
@@ -35,7 +48,7 @@ export async function connect(server: Server, keys: SSHKey[] = [], log?: (event:
   })
 }
 export class Remote {
-  constructor(private conn: SshClient,private log?: (event:Progress)=>void) {}
+  constructor(private conn: SshClient,private log?: (event:Progress)=>void,private username='root') {}
   close() { this.conn.end() }
   async exec(script: string, timeoutMs=120000, display: {label?:string;output?:'install'}={}): Promise<string> {
     const commandId=randomUUID(),started=Date.now(),label=display.label??'Выполнение команды'
@@ -53,7 +66,7 @@ export class Remote {
         return true
       }
       const timer=setTimeout(()=>{if(finish(new Error('Время операции истекло. Проверьте состояние сервера перед повтором.')))this.conn.end()},timeoutMs)
-      try {this.conn.exec('bash -se', (error,stream)=> {
+      try {this.conn.exec(this.username==='root'?'bash -se':'sudo -n bash -se', (error,stream)=> {
         if(error){finish(new Error('Не удалось запустить команду по SSH'));return}
         if(done){stream.close();return}
         let output='';let size=0
@@ -86,6 +99,17 @@ export class Remote {
     emit('running')
     try{await new Promise<void>((resolve,reject)=>this.conn.sftp((err,sftp)=>{
       if(err){reject(new Error('SFTP недоступен'));return}
+      if(this.username!=='root') {
+        // Unprivileged SFTP cannot write system paths: stage in /tmp (0600, exclusive), then install as root.
+        const staged='/tmp/.manetka-'+randomUUID()
+        sftp.writeFile(staged,content,{mode:0o600,flag:'wx'},e=>{
+          sftp.end()
+          if(e){reject(new Error('Не удалось записать файл на сервер'));return}
+          const dest=shellQuote(path),tmp=shellQuote(staged),next=shellQuote(path+'.'+randomUUID()+'.tmp')
+          this.exec(`trap 'rm -f ${tmp}' EXIT\ninstall -m ${mode.toString(8).padStart(4,'0')} -o root -g root ${tmp} ${next}\nmv -f ${next} ${dest}`).then(()=>resolve(),()=>reject(new Error('Не удалось записать файл через sudo')))
+        })
+        return
+      }
       const temp=path+'.'+randomUUID()+'.tmp'
       sftp.writeFile(temp,content,{mode,flag:'wx'},e=>{
         if(e){sftp.end();reject(new Error('Не удалось записать файл на сервер'));return}

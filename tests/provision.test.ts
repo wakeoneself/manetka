@@ -17,6 +17,8 @@ test('rejects shell injection, invalid IPv4, credentials and VPN ports',()=>{
  assert(serverInputSchema.safeParse(input).success)
  for(const host of ['1.2.3.4; id','$(id)','-oProxyCommand=id','256.1.1.1','example.com','127.0.0.1\n'])assert(!serverInputSchema.safeParse({...input,host}).success)
  assert(!serverInputSchema.safeParse({...input,username:'root;id'}).success)
+ assert(serverInputSchema.safeParse({...input,username:'deploy'}).success)
+ for(const username of ['','Root','-x','a b','a$(id)'])assert(!serverInputSchema.safeParse({...input,username}).success)
  assert(!provisionSchema.safeParse({serverId:server.id,protocol:'wireguard',port:65536,sni:'foo.com',domain:'',path:'/x',harden:true,dedicated:true}).success)
  assert(!configInputSchema.safeParse({name:'Phone',serverId:server.id,protocol:'wireguard',dns:'1.1.1.1\nPostUp = id',mtu:1280,allowedIPs:'0.0.0.0/0'}).success)
  const quoted=shellQuote("hello'$(id)`whoami`");const result=spawnSync('bash',['-c',`printf '%s' ${quoted}`],{encoding:'utf8'});assert.equal(result.stdout,"hello'$(id)`whoami`")
@@ -30,7 +32,7 @@ test('WireGuard and AmneziaWG server/client configs share parameters and use uni
  assert(clientConfig.includes('Endpoint = 192.0.2.14:51821'));assert(clientConfig.includes('::/0'));assert(!serverConfig.includes(a.privateKey))
 })
 test('Reality uses Vision; XHTTP and WebSocket never advertise Vision; WS binds only loopback',()=>{
- const {server}=fixture();for(const p of PROTOCOLS)server.protocols[p]=makeMaterial(p,{port:p==='vless-ws'?2053:443,sni:'www.microsoft.com',domain:'vpn.example.com',path:'/connect'})
+ const {server}=fixture();for(const p of PROTOCOLS.filter(p=>p.startsWith('vless')))server.protocols[p]=makeMaterial(p,{port:p==='vless-ws'?2053:443,sni:'www.microsoft.com',domain:'vpn.example.com',path:'/connect'})
  const configs=PROTOCOLS.filter(p=>p.startsWith('vless')).map(p=>({id:randomUUID(),name:'Phone & Router',serverId:server.id,protocol:p,clientId:randomUUID(),createdAt:new Date().toISOString(),content:'',revoked:false}))
  const cfg=xrayConfig(server,configs)
  for(const inbound of cfg.inbounds){assert.equal(inbound.settings.clients.length,1);if(inbound.tag==='vless-reality')assert.equal((inbound.settings.clients[0] as {flow?:string}).flow,'xtls-rprx-vision');else assert(!('flow' in inbound.settings.clients[0]));if(inbound.tag==='vless-ws')assert.equal(inbound.listen,'127.0.0.1')}

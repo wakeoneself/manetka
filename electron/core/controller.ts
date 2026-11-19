@@ -1,14 +1,14 @@
 import { randomUUID } from 'node:crypto'
 import type { ConfigInput, Profile, Progress, Protocol, ProvisionInput, RouteInput, Server, ServerInput, SSHKeyInput, VpnConfig } from '../../src/model'
-import { protocolInfo } from '../../src/model'
+import { isXray, protocolInfo, transportsOf } from '../../src/model'
 import { Vault } from './vault'
 import { configInputSchema, fingerprintSchema, idSchema, nameSchema, provisionSchema, routeInputSchema, serverInputSchema, sshKeyInputSchema, shellQuote as q } from './validation'
 import { probe, withRemote, type Remote } from './ssh'
 import { describePrivateKey, generateSSHKey, keyUses } from './ssh-keys'
-import { applyConfigs, inspect, provision, updateFirewall, validatePorts } from './provision'
-import { cleanupScript, initialize, ownerCheck, preflight } from './scripts'
+import { applyConfigs, inspect, provision, removeShim, startShim, updateFirewall, validatePorts } from './provision'
+import { authorizeKeyScript, cleanupScript, initialize, ownerCheck, preflight, shimUnitName } from './scripts'
 import { resourceNamespace } from './resource-namespace'
-import { makeMaterial, subnet, vlessLink, wgClientConfig, x25519 } from './protocols'
+import { hysteriaLink, hysteriaSecret, makeMaterial, shadowsocksLink, subnet, userSecret, vlessLink, wgClientConfig, x25519 } from './protocols'
 
 export class Controller {
   busy?: string
@@ -80,7 +80,7 @@ export class Controller {
     if(!key){key=await generateSSHKey(`${server.name.slice(0,72)} · SSH`);this.vault.require().sshKeys.push(key);server.pendingSshKeyId=key.id;await this.audit('Сохранён SSH-ключ перед установкой на сервер')}
     const ns=resourceNamespace(server)
     const line=key.publicKey+' '+ns+'-'+server.ownerId
-    await this.withServer(server,r=>r.exec(`${ownerCheck(server)}\ninstall -d -m 711 /etc/${ns}\nif [ ! -f /etc/${ns}/owner ]; then printf '%s' ${q(server.ownerId)} > /etc/${ns}/owner; fi\ntest ! -L /root/.ssh\ninstall -d -m 700 /root/.ssh\ntest ! -L /root/.ssh/authorized_keys\ntouch /root/.ssh/authorized_keys\nchmod 600 /root/.ssh/authorized_keys\ngrep -qF -- ${q(line)} /root/.ssh/authorized_keys || printf '%s\\n' ${q(line)} >> /root/.ssh/authorized_keys`))
+    await this.withServer(server,r=>r.exec(`${ownerCheck(server)}\ninstall -d -m 711 /etc/${ns}\nif [ ! -f /etc/${ns}/owner ]; then printf '%s' ${q(server.ownerId)} > /etc/${ns}/owner; fi\n${authorizeKeyScript(server,line)}`))
     const next={...server,credential:{type:'key' as const,keyId:key.id}}
     // Verify a fresh key login before persisting the replacement and disabling passwords.
     await this.withServer(next,r=>r.exec('true',120000,{label:'Проверка нового SSH-входа'}))
@@ -92,11 +92,11 @@ export class Controller {
     const input=provisionSchema.parse(raw);const s=this.server(input.serverId);const profile=this.profile()
     if(!s.fingerprint||!s.os)throw new Error('Сначала проверьте SSH-доступ и систему')
     if(s.protocols[input.protocol])throw new Error('Этот протокол уже добавлен. При незавершённой установке используйте восстановление.')
-    const transport=protocolInfo[input.protocol].transport
-    if(Object.entries(s.protocols).some(([p,c])=>c.port===input.port&&protocolInfo[p as Protocol].transport===transport)||profile.routes.some(r=>r.entryId===s.id&&r.port===input.port&&protocolInfo[r.protocol].transport===transport))throw new Error('Порт занят другим протоколом или мостом')
+    const transports=transportsOf(input.protocol),overlap=(p:Protocol)=>transportsOf(p).some(t=>transports.includes(t))
+    if(Object.entries(s.protocols).some(([p,c])=>c.port===input.port&&overlap(p as Protocol))||profile.routes.some(r=>r.entryId===s.id&&r.port===input.port&&overlap(r.protocol))||(transports.includes('udp')&&profile.routes.some(r=>r.exitId===s.id&&r.shimPort===input.port)))throw new Error('Порт занят другим протоколом или мостом')
     if(input.protocol==='vless-ws'&&s.protocols['vless-reality']?.port===443)throw new Error('Для WebSocket порт 443 нужен Caddy. Перенесите REALITY на другой сервер.')
-    if(s.protocols['vless-ws']&&transport==='tcp'&&[80,443,18080].includes(input.port))throw new Error('Порт зарезервирован TLS-службой')
-    await this.withServer(s,r=>validatePorts(r,s,[{port:input.port,transport}]))
+    if(s.protocols['vless-ws']&&transports.includes('tcp')&&[80,443,18080].includes(input.port))throw new Error('Порт зарезервирован TLS-службой')
+    await this.withServer(s,r=>validatePorts(r,s,transports.map(transport=>({port:input.port,transport}))))
     s.protocols[input.protocol]=makeMaterial(input.protocol,input);s.status='partial';s.hardened=input.harden
     // Persist keys and intent before touching the VPS. A crash leaves a recoverable record.
     await this.audit('Начата установка '+protocolInfo[input.protocol].name)
@@ -117,7 +117,9 @@ export class Controller {
     const entry=route?this.server(route.entryId):s;const port=route?route.port:settings.port
     if(input.protocol==='vless-ws'&&route)throw new Error('Для TLS/CDN используйте прямой домен: L4-мост для WebSocket пока не поддержан')
     const c:VpnConfig={id:randomUUID(),name:input.name,serverId:s.id,protocol:input.protocol,routeId:route?.id,createdAt:new Date().toISOString(),content:'',revoked:false}
-    if(input.protocol.startsWith('vless')){c.clientId=randomUUID();c.content=vlessLink(input.protocol,settings,c.clientId,c.name,input.protocol==='vless-ws'?settings.domain:entry.host,port)}
+    if(input.protocol==='shadowsocks'){c.secret=userSecret();c.content=shadowsocksLink(settings,c.secret,c.name,entry.host,port)}
+    else if(input.protocol==='hysteria2'){c.clientId=randomUUID();c.secret=hysteriaSecret();c.content=hysteriaLink(settings,c.clientId,c.secret,c.name,entry.host,port)}
+    else if(input.protocol.startsWith('vless')){c.clientId=randomUUID();c.content=vlessLink(input.protocol,settings,c.clientId,c.name,input.protocol==='vless-ws'?settings.domain:entry.host,port)}
     else {
       const used=new Set(profile.configs.filter(c=>c.serverId===s.id&&c.protocol===input.protocol&&!c.revoked).map(c=>c.address))
       let last=2;while(used.has(`${subnet(input.protocol)}.${last}`))last++
@@ -132,32 +134,54 @@ export class Controller {
     // Revoke remotely before declaring success locally. On failure retain material for retry.
     const proposed=structuredClone(this.profile());proposed.configs.find(v=>v.id===id)!.revoked=true
     await this.withServer(s,async r=>{await r.exec(ownerCheck(s));await applyConfigs(r,s,proposed,c.protocol)})
-    c.revoked=true;c.content='';c.publicKey=undefined;c.clientId=undefined;await this.audit('Отозван конфиг')
+    c.revoked=true;c.content='';c.publicKey=undefined;c.clientId=undefined;c.secret=undefined;await this.audit('Отозван конфиг')
   }
   async createRoute(raw:RouteInput) {
     const input=routeInputSchema.parse(raw);const entry=this.server(input.entryId);const exit=this.server(input.exitId);const profile=this.profile()
+    const stun=input.mode==='stun'
     if(!entry.fingerprint||!entry.os||exit.status!=='ready'||!exit.protocols[input.protocol])throw new Error('Проверьте входной сервер и настройте протокол на выходном')
     if(input.protocol==='vless-ws')throw new Error('WebSocket/TLS через L4-мост пока не поддержан')
-    if(input.port===entry.port||profile.routes.some(r=>r.entryId===entry.id&&r.port===input.port)||Object.values(entry.protocols).some(p=>p?.port===input.port))throw new Error('Входной порт занят')
-    await this.withServer(entry,r=>validatePorts(r,entry,[{port:input.port,transport:protocolInfo[input.protocol].transport}]))
-    const route={...input,id:randomUUID(),status:'partial' as const,createdAt:new Date().toISOString()};profile.routes.push(route);entry.status='partial';await this.audit('Начата настройка моста')
-    await this.withServer(entry,async r=>{await r.exec(preflight(entry));await r.exec(initialize(entry),300000,{label:'Установка системных пакетов',output:'install'});await updateFirewall(r,entry,profile,this.log,this.vault.require().sshKeys)})
-    const stored=profile.routes.find(r=>r.id===route.id)!;stored.status='ready';entry.managed=true;entry.status=Object.keys(entry.protocols).length?'ready':'verified';await this.audit('Создан TCP/UDP-мост')
+    const transports=transportsOf(input.protocol),overlap=(p:Protocol)=>transportsOf(p).some(t=>transports.includes(t))
+    if(input.port===entry.port||profile.routes.some(r=>r.entryId===entry.id&&r.port===input.port&&overlap(r.protocol))||Object.entries(entry.protocols).some(([p,c])=>c?.port===input.port&&overlap(p as Protocol))||(transports.includes('udp')&&profile.routes.some(r=>r.exitId===entry.id&&r.shimPort===input.port)))throw new Error('Входной порт занят')
+    if(stun) {
+      const sp=input.shimPort!
+      const udpPort=(p:Protocol)=>transportsOf(p).includes('udp')
+      if(sp===exit.port||Object.entries(exit.protocols).some(([p,c])=>c?.port===sp&&udpPort(p as Protocol))||profile.routes.some(r=>(r.exitId===exit.id&&r.shimPort===sp)||(r.entryId===exit.id&&r.port===sp&&udpPort(r.protocol))))throw new Error('Порт шима на выходном сервере занят')
+    }
+    await this.withServer(entry,r=>validatePorts(r,entry,transports.map(transport=>({port:input.port,transport}))))
+    if(stun)await this.withServer(exit,r=>validatePorts(r,exit,[{port:input.shimPort!,transport:'udp'}]))
+    const route={...input,mode:input.mode??'forward',id:randomUUID(),status:'partial' as const,createdAt:new Date().toISOString()};profile.routes.push(route);entry.status='partial';await this.audit('Начата настройка моста')
+    const keys=this.vault.require().sshKeys
+    if(stun)exit.status=exit.status==='ready'?'partial':exit.status
+    await this.withServer(entry,async r=>{
+      await r.exec(preflight(entry));await r.exec(initialize(entry),300000,{label:'Установка системных пакетов',output:'install'})
+      if(stun)await startShim(r,entry,shimUnitName(entry,route.id),'entry',route.port,`${exit.host}:${route.shimPort}`)
+      await updateFirewall(r,entry,profile,this.log,keys)
+    })
+    if(stun)await this.withServer(exit,async r=>{
+      await r.exec(ownerCheck(exit));await r.exec(initialize(exit),300000,{label:'Установка системных пакетов',output:'install'})
+      await startShim(r,exit,shimUnitName(exit,route.id),'exit',route.shimPort!,`127.0.0.1:${exit.protocols[route.protocol]!.port}`)
+      await updateFirewall(r,exit,profile,this.log,keys)
+    })
+    const stored=profile.routes.find(r=>r.id===route.id)!;stored.status='ready';entry.managed=true;entry.status=Object.keys(entry.protocols).length?'ready':'verified'
+    if(stun)exit.status='ready'
+    await this.audit(stun?'Создан мост с UDP-шимом':'Создан TCP/UDP-мост')
   }
   async deleteRoute(id:string) {
     idSchema.parse(id);const profile=this.profile();const route=profile.routes.find(r=>r.id===id);if(!route)throw new Error('Маршрут не найден')
     if(profile.configs.some(c=>c.routeId===id&&!c.revoked))throw new Error('Сначала отзовите конфиги этого маршрута')
     const next=structuredClone(profile);next.routes=next.routes.filter(r=>r.id!==id)
-    await this.withServer(this.server(route.entryId),async r=>{await r.exec(ownerCheck(this.server(route.entryId)));await updateFirewall(r,this.server(route.entryId),next,this.log,this.vault.require().sshKeys)})
+    const keys=this.vault.require().sshKeys,entry=this.server(route.entryId),exit=this.server(route.exitId)
+    await this.withServer(entry,async r=>{await r.exec(ownerCheck(entry));if(route.mode==='stun')await removeShim(r,shimUnitName(entry,route.id));await updateFirewall(r,entry,next,this.log,keys)})
+    if(route.mode==='stun')await this.withServer(exit,async r=>{await r.exec(ownerCheck(exit));await removeShim(r,shimUnitName(exit,route.id));await updateFirewall(r,exit,next,this.log,keys)})
     profile.routes=next.routes;profile.configs=profile.configs.filter(c=>c.routeId!==id);await this.audit('Удалён мост')
   }
   async deleteServer(id:string,confirmation:string,cleanup:boolean) {
     const s=this.server(id);const profile=this.profile()
     if(confirmation!==s.host)throw new Error('Для подтверждения повторите IP сервера')
     if(profile.routes.some(r=>r.entryId===id||r.exitId===id))throw new Error('Сначала удалите связанные маршруты')
-    if(!cleanup&&(s.managed||s.pendingSshKeyId))throw new Error('Сначала очистите установленный VPN на сервере')
     if(cleanup)await this.withServer(s,r=>r.exec(cleanupScript(s),120000))
-    profile.servers=profile.servers.filter(s=>s.id!==id);profile.configs=profile.configs.filter(c=>c.serverId!==id);await this.audit(cleanup?'Удалены службы и ключи maNETka на сервере':'Удалена локальная запись сервера')
+    profile.servers=profile.servers.filter(s=>s.id!==id);profile.configs=profile.configs.filter(c=>c.serverId!==id);await this.audit(cleanup?'Удалены службы и ключи maNETka на сервере':'Удалена локальная запись сервера без очистки')
   }
 
 }

@@ -1,5 +1,5 @@
 import type { Protocol, Server, Route } from '../../src/model'
-import { protocolInfo } from '../../src/model'
+import { transportsOf } from '../../src/model'
 import { shellQuote as q } from './validation'
 import { resourceNamespace } from './resource-namespace'
 
@@ -23,7 +23,7 @@ install -d -m 700 /run/${ns}
 if [ ! -f /etc/${ns}/owner ]; then printf '%s' ${q(server.ownerId)} > /etc/${ns}/owner; fi
 export DEBIAN_FRONTEND=noninteractive
 apt-get -o DPkg::Lock::Timeout=180 update -qq
-apt-get -o DPkg::Lock::Timeout=180 install -y -qq ca-certificates curl unzip iptables iproute2
+apt-get -o DPkg::Lock::Timeout=180 install -y -qq ca-certificates curl unzip iptables iproute2 openssl
 if [ ! -f /etc/${ns}/ip-forward-before ]; then cat /proc/sys/net/ipv4/ip_forward > /etc/${ns}/ip-forward-before; fi
 `}
 export function tunnelUnit(protocol:Protocol,server:Server):string {
@@ -33,8 +33,11 @@ export function tunnelUnit(protocol:Protocol,server:Server):string {
   return `[Unit]\nDescription=maNETka ${protocol}\nAfter=network-online.target ${ns}-firewall.service\nWants=network-online.target\n[Service]\nType=oneshot\nRemainAfterExit=yes\nEnvironment=PATH=/usr/local/lib/${ns}/awg-tools/bin:/usr/local/lib/${ns}:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\nEnvironment=WG_QUICK_USERSPACE_IMPLEMENTATION=/usr/local/lib/${ns}/amneziawg-go\nExecStart=${cmd} up /etc/${ns}/${name}.conf\nExecStop=${cmd} down /etc/${ns}/${name}.conf\nUMask=0077\n[Install]\nWantedBy=multi-user.target\n`
 }
 export function xrayUnit(server:Server):string {const ns=resourceNamespace(server);return `[Unit]\nDescription=maNETka Xray\nAfter=network-online.target ${ns}-firewall.service\nWants=network-online.target\n[Service]\nUser=${ns}-xray\nGroup=${ns}-xray\nExecStart=/usr/local/lib/${ns}/xray run -config /etc/${ns}/xray.json\nRestart=on-failure\nRestartSec=3\nNoNewPrivileges=true\nPrivateTmp=true\nProtectHome=true\nProtectSystem=strict\nProtectKernelTunables=true\nProtectKernelModules=true\nProtectControlGroups=true\nRestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX\nCapabilityBoundingSet=CAP_NET_BIND_SERVICE\nAmbientCapabilities=CAP_NET_BIND_SERVICE\nUMask=0077\n[Install]\nWantedBy=multi-user.target\n`}
+export function hysteriaUnit(server:Server):string {const ns=resourceNamespace(server);return `[Unit]\nDescription=maNETka Hysteria 2\nAfter=network-online.target ${ns}-firewall.service\nWants=network-online.target\n[Service]\nUser=${ns}-hysteria\nGroup=${ns}-hysteria\nExecStart=/usr/local/lib/${ns}/hysteria server -c /etc/${ns}/hysteria.yaml\nRestart=on-failure\nRestartSec=3\nLimitNOFILE=65536\nNoNewPrivileges=true\nPrivateTmp=true\nProtectHome=true\nProtectSystem=strict\nProtectKernelTunables=true\nProtectKernelModules=true\nProtectControlGroups=true\nCapabilityBoundingSet=CAP_NET_BIND_SERVICE\nAmbientCapabilities=CAP_NET_BIND_SERVICE\nUMask=0077\n[Install]\nWantedBy=multi-user.target\n`}
+export const shimUnitName=(server:Server,routeId:string)=>`${resourceNamespace(server)}-shim-${routeId.slice(0,8)}`
+export function shimUnit(server:Server,mode:'entry'|'exit',listen:number,target:string):string {const ns=resourceNamespace(server);return `[Unit]\nDescription=maNETka UDP shim (${mode})\nAfter=network-online.target ${ns}-firewall.service\nWants=network-online.target\n[Service]\nDynamicUser=yes\nExecStart=/usr/local/lib/${ns}/shim -mode ${mode} -listen 0.0.0.0:${listen} -target ${target}\nRestart=always\nRestartSec=2\nLimitNOFILE=65536\nNoNewPrivileges=true\nPrivateTmp=true\nProtectHome=true\nProtectSystem=strict\nProtectKernelTunables=true\nProtectKernelModules=true\nProtectControlGroups=true\nRestrictAddressFamilies=AF_INET AF_INET6\nCapabilityBoundingSet=CAP_NET_BIND_SERVICE\nAmbientCapabilities=CAP_NET_BIND_SERVICE\n[Install]\nWantedBy=multi-user.target\n`}
 export function caddyUnit(server:Server):string {const ns=resourceNamespace(server);return `[Unit]\nDescription=maNETka Caddy TLS\nAfter=network-online.target\n[Service]\nUser=${ns}-caddy\nGroup=${ns}-caddy\nStateDirectory=${ns}-caddy\nEnvironment=HOME=/var/lib/${ns}-caddy\nExecStart=/usr/local/lib/${ns}/caddy run --config /etc/${ns}/Caddyfile --adapter caddyfile\nRestart=on-failure\nNoNewPrivileges=true\nPrivateTmp=true\nProtectSystem=strict\nProtectHome=true\nCapabilityBoundingSet=CAP_NET_BIND_SERVICE\nAmbientCapabilities=CAP_NET_BIND_SERVICE\nUMask=0077\n[Install]\nWantedBy=multi-user.target\n`}
-export function firewallUnit(server:Server):string {const ns=resourceNamespace(server);return `[Unit]\nDescription=maNETka firewall\nAfter=network-pre.target\nBefore=${ns}-wireguard.service ${ns}-amneziawg.service ${ns}-xray.service\n[Service]\nType=oneshot\nRemainAfterExit=yes\nExecStart=/bin/bash /etc/${ns}/firewall.sh\nExecStop=/bin/bash /etc/${ns}/firewall-remove.sh\n[Install]\nWantedBy=multi-user.target\n`}
+export function firewallUnit(server:Server):string {const ns=resourceNamespace(server);return `[Unit]\nDescription=maNETka firewall\nAfter=network-pre.target\nBefore=${ns}-wireguard.service ${ns}-amneziawg.service ${ns}-xray.service ${ns}-hysteria2.service\n[Service]\nType=oneshot\nRemainAfterExit=yes\nExecStart=/bin/bash /etc/${ns}/firewall.sh\nExecStop=/bin/bash /etc/${ns}/firewall-remove.sh\n[Install]\nWantedBy=multi-user.target\n`}
 export const firewallRemove=`set -eu
 for bin in iptables ip6tables; do
   for pair in 'filter INPUT MN_INPUT' 'filter FORWARD MN_FORWARD' 'nat PREROUTING MN_RELAY' 'nat POSTROUTING MN_NAT'; do
@@ -46,9 +49,11 @@ for bin in iptables ip6tables; do
 done
 `
 export function firewallScript(server:Server,routes:Route[],allServers:Server[]):string {
-  const inputRules=Object.entries(server.protocols).map(([p,s])=>`iptables -w -A MN_INPUT -p ${protocolInfo[p as Protocol].transport} --dport ${s.port} -j ACCEPT`).join('\n')
+  const inputRules=Object.entries(server.protocols).flatMap(([p,s])=>transportsOf(p as Protocol).map(t=>`iptables -w -A MN_INPUT -p ${t} --dport ${s.port} -j ACCEPT`)).join('\n')
   const ownRoutes=routes.filter(r=>r.entryId===server.id)
-  const relayRules=ownRoutes.map(r=>{const exit=allServers.find(s=>s.id===r.exitId);const cfg=exit?.protocols[r.protocol];if(!exit||!cfg)throw new Error('Нет выходного сервера');const t=protocolInfo[r.protocol].transport;return `iptables -w -t nat -A MN_RELAY -p ${t} --dport ${r.port} -j DNAT --to-destination ${q(exit.host+':'+cfg.port)}\niptables -w -t nat -A MN_NAT -p ${t} -d ${q(exit.host)} --dport ${cfg.port} -j MASQUERADE\niptables -w -A MN_FORWARD -p ${t} -d ${q(exit.host)} --dport ${cfg.port} -j ACCEPT`}).join('\n')
+  const relayRules=ownRoutes.filter(r=>r.mode!=='stun').flatMap(r=>{const exit=allServers.find(s=>s.id===r.exitId);const cfg=exit?.protocols[r.protocol];if(!exit||!cfg)throw new Error('Нет выходного сервера');return transportsOf(r.protocol).map(t=>`iptables -w -t nat -A MN_RELAY -p ${t} --dport ${r.port} -j DNAT --to-destination ${q(exit.host+':'+cfg.port)}\niptables -w -t nat -A MN_NAT -p ${t} -d ${q(exit.host)} --dport ${cfg.port} -j MASQUERADE\niptables -w -A MN_FORWARD -p ${t} -d ${q(exit.host)} --dport ${cfg.port} -j ACCEPT`)}).join('\n')
+  // UDP shim: the entry shim listens on the bridge port itself; the exit shim accepts only the entry server.
+  const shimRules=[...ownRoutes.filter(r=>r.mode==='stun').map(r=>`iptables -w -A MN_INPUT -p udp --dport ${r.port} -j ACCEPT`),...routes.filter(r=>r.exitId===server.id&&r.mode==='stun').map(r=>{const entry=allServers.find(s=>s.id===r.entryId);if(!entry)throw new Error('Нет входного сервера');return `iptables -w -A MN_INPUT -p udp -s ${q(entry.host)} --dport ${r.shimPort} -j ACCEPT`})].join('\n')
   const tunnels=Object.keys(server.protocols).filter(p=>p==='wireguard'||p==='amneziawg').map(p=>{const iface=p==='wireguard'?'mnwg0':'mnawg0';const net=p==='wireguard'?'10.77.0.0/24':'10.78.0.0/24';return `iptables -w -A MN_FORWARD -i ${iface} -s ${net} -j ACCEPT\niptables -w -t nat -A MN_NAT -s ${net} -o "$wan" -j MASQUERADE`}).join('\n')
   return `set -euo pipefail
 wan=$(ip -4 route show default | awk 'NR==1 {print $5}')
@@ -67,6 +72,7 @@ done
 iptables -w -A MN_INPUT -p icmp -j ACCEPT
 ip6tables -w -A MN_INPUT -p ipv6-icmp -j ACCEPT
 ${inputRules}
+${shimRules}
 ${server.protocols['vless-ws']?'iptables -w -A MN_INPUT -p tcp -m multiport --dports 80,443 -j ACCEPT':''}
 ${tunnels}
 ${relayRules}
@@ -102,19 +108,34 @@ EOF
 /usr/sbin/sshd -t
 systemctl reload ssh
 `}
+const home=(server:Server)=>`$(getent passwd ${q(server.username)} | cut -d: -f6)`
+export function authorizeKeyScript(server:Server,line:string):string {return `h=${home(server)}
+test -n "$h"
+test ! -L "$h/.ssh"
+install -d -m 700 -o ${q(server.username)} "$h/.ssh"
+test ! -L "$h/.ssh/authorized_keys"
+touch "$h/.ssh/authorized_keys"
+chown ${q(server.username)} "$h/.ssh/authorized_keys"
+chmod 600 "$h/.ssh/authorized_keys"
+grep -qF -- ${q(line)} "$h/.ssh/authorized_keys" || printf '%s\n' ${q(line)} >> "$h/.ssh/authorized_keys"`}
 export function cleanupScript(server:Server):string {const ns=resourceNamespace(server);return `${ownerCheck(server)}
 test -f /etc/${ns}/owner
-for unit in ${ns}-wireguard ${ns}-amneziawg ${ns}-xray ${ns}-caddy ${ns}-firewall; do
+for unit in ${ns}-wireguard ${ns}-amneziawg ${ns}-xray ${ns}-hysteria2 ${ns}-caddy ${ns}-firewall; do
   systemctl disable --now "$unit.service" 2>/dev/null || true
+done
+for f in /etc/systemd/system/${ns}-shim-*.service; do
+  if [ -e "$f" ]; then systemctl disable --now "$(basename "$f")" 2>/dev/null || true; fi
 done
 if [ -f /etc/${ns}/firewall-remove.sh ]; then bash /etc/${ns}/firewall-remove.sh; fi
 if [ -f /etc/${ns}/ip-forward-before ]; then sysctl -w "net.ipv4.ip_forward=$(cat /etc/${ns}/ip-forward-before)" >/dev/null; fi
 rm -f /etc/ssh/sshd_config.d/00-${ns}.conf /etc/sysctl.d/70-${ns}.conf
 /usr/sbin/sshd -t && systemctl reload ssh
-rm -f /etc/systemd/system/${ns}-{wireguard,amneziawg,xray,caddy,firewall}.service
+rm -f /etc/systemd/system/${ns}-{wireguard,amneziawg,xray,hysteria2,caddy,firewall}.service /etc/systemd/system/${ns}-shim-*.service
 rm -rf -- /etc/${ns} /usr/local/lib/${ns} /var/lib/${ns}-caddy /run/${ns}
 userdel ${ns}-xray 2>/dev/null || true
 userdel ${ns}-caddy 2>/dev/null || true
-if [ -f /root/.ssh/authorized_keys ]; then sed -i '/ ${ns}-${server.ownerId}$/d' /root/.ssh/authorized_keys; fi
+userdel ${ns}-hysteria 2>/dev/null || true
+h=${home(server)}
+if [ -n "$h" ] && [ -f "$h/.ssh/authorized_keys" ]; then sed -i '/ ${ns}-${server.ownerId}$/d' "$h/.ssh/authorized_keys"; fi
 systemctl daemon-reload
 `}

@@ -44,5 +44,17 @@
       "sha256": "a06e99309dbcbdca1a8ccd2282c3ee146e55930886e26b4f1193269587165f49",
       "version": "go1.27.3"
     }
+  },
+  "hysteria": {
+    "amd64": {
+      "url": "https://github.com/apernet/hysteria/releases/download/app/v2.14.0/hysteria-linux-amd64",
+      "sha256": "fc25edff9948708cb00a4ff01f3bccde677660aca050133bb1ad46c6860362d2",
+      "version": "app/v2.14.0"
+    },
+    "arm64": {
+      "url": "https://github.com/apernet/hysteria/releases/download/app/v2.14.0/hysteria-linux-arm64",
+      "sha256": "e7c52241299fe85aba11e9d36e85d8d88ddbb5799ac0e33d272219d20e313bab",
+      "version": "app/v2.14.0"
+    }
   }
 }

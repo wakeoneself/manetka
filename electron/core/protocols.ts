@@ -1,5 +1,6 @@
 import { generateKeyPairSync, randomBytes, randomInt } from 'node:crypto'
 import type { Protocol, ProtocolSettings, Server, VpnConfig } from '../../src/model'
+import { isXray } from '../../src/model'
 
 export function x25519(): {privateKey:string;publicKey:string} {
   const pair=generateKeyPairSync('x25519')
@@ -9,6 +10,8 @@ export function x25519(): {privateKey:string;publicKey:string} {
 export function awgParameters() { return {Jc:randomInt(4,9),Jmin:40,Jmax:70,S1:randomInt(80,120),S2:randomInt(40,80),H1:randomInt(1e6,1e8),H2:randomInt(1e8,2e8),H3:randomInt(2e8,3e8),H4:randomInt(3e8,4e8)} }
 export function makeMaterial(protocol:Protocol,opts:{port:number;sni:string;domain:string;path:string}):ProtocolSettings {
   const pair=x25519()
+  if(protocol==='shadowsocks')return {port:opts.port,sni:opts.sni,domain:'',path:opts.path,mtu:1280,dns:'1.1.1.1, 1.0.0.1',privateKey:randomBytes(32).toString('base64')}
+  if(protocol==='hysteria2')return {port:opts.port,sni:opts.sni,domain:'',path:opts.path,mtu:1280,dns:'1.1.1.1, 1.0.0.1',obfs:randomBytes(24).toString('base64url')}
   return {port:opts.port,sni:opts.sni,domain:opts.domain,path:opts.path,mtu:1280,dns:'1.1.1.1, 1.0.0.1',privateKey:protocol.startsWith('vless')?Buffer.from(pair.privateKey,'base64').toString('base64url'):pair.privateKey,publicKey:protocol.startsWith('vless')?Buffer.from(pair.publicKey,'base64').toString('base64url'):pair.publicKey,...(protocol==='amneziawg'?{awg:awgParameters()}:{}),shortId:randomBytes(8).toString('hex')}
 }
 export const iface=(protocol:Protocol) => protocol==='wireguard'?'mnwg0':'mnawg0'
@@ -21,17 +24,40 @@ export function wgClientConfig(protocol:Protocol,settings:ProtocolSettings,pair:
   // preventing native IPv6 bypass for the default full-tunnel profile.
   return ['[Interface]',`PrivateKey = ${pair.privateKey}`,`Address = ${address}/32, fd77:77::${Number(address.split('.').at(-1)).toString(16)}/128`,`DNS = ${dns}`,`MTU = ${mtu}`,...Object.entries(settings.awg??{}).map(([k,v])=>`${k} = ${v}`),'','[Peer]',`PublicKey = ${settings.publicKey}`,`Endpoint = ${host}:${port}`,`AllowedIPs = ${allowed}`,'PersistentKeepalive = 25',''].join('\n')
 }
+export const SS_METHOD='2022-blake3-aes-256-gcm'
+export const userSecret=()=>randomBytes(32).toString('base64')
 export function xrayConfig(server:Server,configs:VpnConfig[]) {
+  const ss=Object.entries(server.protocols).filter(([p])=>p==='shadowsocks').map(([p,s])=>({
+    tag:p,listen:'0.0.0.0',port:s.port,protocol:'shadowsocks',
+    settings:{method:SS_METHOD,password:s.privateKey,network:'tcp,udp',clients:configs.filter(c=>c.protocol===p&&!c.revoked&&c.secret).map(c=>({password:c.secret,email:c.id}))}
+  }))
   const inbounds=Object.entries(server.protocols).filter(([p])=>p.startsWith('vless')).map(([p,s])=>({
     tag:p,listen:p==='vless-ws'?'127.0.0.1':'0.0.0.0',port:p==='vless-ws'?18080:s.port,protocol:'vless',
     settings:{decryption:'none',clients:configs.filter(c=>c.protocol===p&&!c.revoked).map(c=>({id:c.clientId,...(p==='vless-reality'?{flow:'xtls-rprx-vision'}:{})}))},
     streamSettings:{network:p==='vless-xhttp'?'xhttp':p==='vless-ws'?'ws':'tcp',security:p==='vless-ws'?'none':'reality',...(p==='vless-ws'?{wsSettings:{path:s.path}}:{realitySettings:{show:false,target:`${s.sni}:443`,xver:0,serverNames:[s.sni],privateKey:s.privateKey,shortIds:[s.shortId]},...(p==='vless-xhttp'?{xhttpSettings:{path:s.path,mode:'auto'}}:{})})}
   }))
-  return {log:{loglevel:'warning',access:'none'},inbounds,outbounds:[{protocol:'freedom',tag:'direct'},{protocol:'blackhole',tag:'block'}],routing:{rules:[{type:'field',ip:['10.0.0.0/8','172.16.0.0/12','192.168.0.0/16','127.0.0.0/8','169.254.0.0/16','100.64.0.0/10','::1/128','fc00::/7','fe80::/10'],outboundTag:'block'}]}}
+  return {log:{loglevel:'warning',access:'none'},inbounds:[...inbounds,...ss],outbounds:[{protocol:'freedom',tag:'direct'},{protocol:'blackhole',tag:'block'}],routing:{rules:[{type:'field',ip:['10.0.0.0/8','172.16.0.0/12','192.168.0.0/16','127.0.0.0/8','169.254.0.0/16','100.64.0.0/10','::1/128','fc00::/7','fe80::/10'],outboundTag:'block'}]}}
 }
 export function vlessLink(protocol:Protocol,settings:ProtocolSettings,clientId:string,name:string,host:string,port:number):string {
   const params=new URLSearchParams({encryption:'none',type:protocol==='vless-xhttp'?'xhttp':protocol==='vless-ws'?'ws':'tcp',security:protocol==='vless-ws'?'tls':'reality',sni:protocol==='vless-ws'?settings.domain:settings.sni,fp:'chrome'})
   if(protocol==='vless-ws'){params.set('host',settings.domain);params.set('path',settings.path)}
   else {params.set('pbk',settings.publicKey!);params.set('sid',settings.shortId!);if(protocol==='vless-reality')params.set('flow','xtls-rprx-vision');else{params.set('path',settings.path);params.set('mode','auto')}}
   return `vless://${clientId}@${host}:${port}?${params}#${encodeURIComponent(name)}`
+}
+export function shadowsocksLink(settings:ProtocolSettings,userKey:string,name:string,host:string,port:number):string {
+  // SIP022: userinfo is method:iPSK:uPSK with each key percent-encoded (not base64-wrapped).
+  return `ss://${SS_METHOD}:${encodeURIComponent(settings.privateKey!)}:${encodeURIComponent(userKey)}@${host}:${port}#${encodeURIComponent(name)}`
+}
+export const hysteriaSecret=()=>randomBytes(24).toString('base64url')
+export const HYSTERIA_BLOCKED=['10.0.0.0/8','172.16.0.0/12','192.168.0.0/16','127.0.0.0/8','169.254.0.0/16','100.64.0.0/10','::1/128','fc00::/7','fe80::/10']
+export function hysteriaConfig(server:Server,configs:VpnConfig[],certDir:string):string {
+  const s=server.protocols.hysteria2!
+  const users=configs.filter(c=>c.protocol==='hysteria2'&&!c.revoked&&c.clientId&&c.secret)
+  // JSON strings are valid YAML scalars, so values need no extra escaping.
+  const j=JSON.stringify
+  return [`listen: ${j(':'+s.port)}`,'tls:',`  cert: ${j(certDir+'/server.crt')}`,`  key: ${j(certDir+'/server.key')}`,'auth:','  type: userpass',users.length?'  userpass:':'  userpass: {}',...users.map(c=>`    ${j(c.clientId)}: ${j(c.secret)}`),'obfs:','  type: salamander','  salamander:',`    password: ${j(s.obfs)}`,'acl:','  inline:',...HYSTERIA_BLOCKED.map(n=>`    - ${j(`reject(${n})`)}`),`    - "direct(all)"`,''].join('\n')
+}
+export function hysteriaLink(settings:ProtocolSettings,clientId:string,secret:string,name:string,host:string,port:number):string {
+  const params=new URLSearchParams({obfs:'salamander','obfs-password':settings.obfs!,sni:settings.sni,insecure:'1',pinSHA256:settings.certPin!})
+  return `hysteria2://${clientId}:${secret}@${host}:${port}/?${params}#${encodeURIComponent(name)}`
 }
