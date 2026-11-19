@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import type { ConfigInput, Profile, Progress, Protocol, ProvisionInput, RouteInput, Server, ServerInput, SSHKeyInput, VpnConfig } from '../../src/model'
+import type { ConfigInput, Profile, Progress, Protocol, ProvisionInput, Route, RouteInput, Server, ServerInput, SSHKeyInput, VpnConfig } from '../../src/model'
 import { isXray, protocolInfo, transportsOf } from '../../src/model'
 import { Vault } from './vault'
 import { configInputSchema, fingerprintSchema, idSchema, nameSchema, provisionSchema, routeInputSchema, serverInputSchema, sshKeyInputSchema, shellQuote as q } from './validation'
@@ -36,7 +36,7 @@ export class Controller {
   async transaction<T>(name:string,fn:()=>Promise<T>):Promise<T> {
     if(this.busy)throw new Error('Дождитесь завершения текущей операции')
     this.busy=name
-    const tracked=['provision','repairServer','createRoute','deleteRoute','createConfig','revokeConfig','checkServer','deleteServer'].includes(name)
+    const tracked=['provision','repairServer','createRoute','repairRoute','deleteRoute','createConfig','revokeConfig','checkServer','deleteServer'].includes(name)
     if(tracked)this.log({event:'operation',step:'Начало',detail:'Подготовка операции и SSH-подключения',kind:'info',state:'running'})
     try{const value=await fn();if(tracked)this.log({event:'operation',step:'Завершено',detail:'Операция завершена',kind:'ok',state:'done'});return value}
     catch(error){if(tracked)this.log({event:'operation',step:'Операция прервана',detail:'Проверьте сообщение об ошибке перед повтором',kind:'error',state:'failed'});throw error}
@@ -113,7 +113,8 @@ export class Controller {
     const input=configInputSchema.parse(raw);const s=this.server(input.serverId);const profile=this.profile();const settings=s.protocols[input.protocol]
     if(s.status!=='ready'||!settings)throw new Error('Этот протокол ещё не готов на сервере')
     const route=input.routeId?profile.routes.find(r=>r.id===input.routeId):undefined
-    if(input.routeId&&(!route||route.exitId!==s.id||route.protocol!==input.protocol||route.status!=='ready'))throw new Error('Маршрут не поддерживает выбранный протокол')
+    if(input.routeId&&route&&route.status!=='ready')throw new Error('Мост настроен не до конца. Откройте «Маршруты» и нажмите «Восстановить».')
+    if(input.routeId&&(!route||route.exitId!==s.id||route.protocol!==input.protocol))throw new Error('Маршрут не поддерживает выбранный протокол')
     const entry=route?this.server(route.entryId):s;const port=route?route.port:settings.port
     if(input.protocol==='vless-ws'&&route)throw new Error('Для TLS/CDN используйте прямой домен: L4-мост для WebSocket пока не поддержан')
     const c:VpnConfig={id:randomUUID(),name:input.name,serverId:s.id,protocol:input.protocol,routeId:route?.id,createdAt:new Date().toISOString(),content:'',revoked:false}
@@ -151,8 +152,13 @@ export class Controller {
     await this.withServer(entry,r=>validatePorts(r,entry,transports.map(transport=>({port:input.port,transport}))))
     if(stun)await this.withServer(exit,r=>validatePorts(r,exit,[{port:input.shimPort!,transport:'udp'}]))
     const route={...input,mode:input.mode??'forward',id:randomUUID(),status:'partial' as const,createdAt:new Date().toISOString()};profile.routes.push(route);entry.status='partial';await this.audit('Начата настройка моста')
-    const keys=this.vault.require().sshKeys
-    if(stun)exit.status=exit.status==='ready'?'partial':exit.status
+    await this.applyRoute(route)
+    await this.audit(stun?'Создан мост с UDP-шимом':'Создан TCP/UDP-мост')
+  }
+  // Idempotent: also used to repair a route whose setup was interrupted.
+  async applyRoute(route:Route) {
+    const profile=this.profile(),entry=this.server(route.entryId),exit=this.server(route.exitId),keys=this.vault.require().sshKeys,stun=route.mode==='stun'
+    entry.status='partial';if(stun)exit.status=exit.status==='ready'?'partial':exit.status
     await this.withServer(entry,async r=>{
       await r.exec(preflight(entry));await r.exec(initialize(entry),300000,{label:'Установка системных пакетов',output:'install'})
       if(stun)await startShim(r,entry,shimUnitName(entry,route.id),'entry',route.port,`${exit.host}:${route.shimPort}`)
@@ -163,9 +169,12 @@ export class Controller {
       await startShim(r,exit,shimUnitName(exit,route.id),'exit',route.shimPort!,`127.0.0.1:${exit.protocols[route.protocol]!.port}`)
       await updateFirewall(r,exit,profile,this.log,keys)
     })
-    const stored=profile.routes.find(r=>r.id===route.id)!;stored.status='ready';entry.managed=true;entry.status=Object.keys(entry.protocols).length?'ready':'verified'
+    route.status='ready';entry.managed=true;entry.status=Object.keys(entry.protocols).length?'ready':'verified'
     if(stun)exit.status='ready'
-    await this.audit(stun?'Создан мост с UDP-шимом':'Создан TCP/UDP-мост')
+  }
+  async repairRoute(id:string) {
+    idSchema.parse(id);const route=this.profile().routes.find(r=>r.id===id);if(!route)throw new Error('Маршрут не найден')
+    await this.applyRoute(route);await this.audit('Восстановлен мост')
   }
   async deleteRoute(id:string) {
     idSchema.parse(id);const profile=this.profile();const route=profile.routes.find(r=>r.id===id);if(!route)throw new Error('Маршрут не найден')

@@ -66,6 +66,7 @@ export type Api = {
   revokeConfig(id: string): Promise<PublicState>;
   createRoute(input: RouteInput): Promise<PublicState>;
   deleteRoute(id: string): Promise<PublicState>;
+  repairRoute(id: string): Promise<PublicState>;
   deleteServer(id: string, confirmation: string, cleanup: boolean): Promise<PublicState>;
   saveVaultCopy():Promise<boolean>;
   setAutoLock(minutes: number): Promise<PublicState>;

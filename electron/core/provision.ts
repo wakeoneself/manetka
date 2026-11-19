@@ -6,7 +6,8 @@ import downloads from './downloads.json'
 import { withRemote, type Remote, connect } from './ssh'
 import { shellQuote as q } from './validation'
 import { hysteriaConfig, iface, wgServerConfig, xrayConfig } from './protocols'
-import { shimGoMod, shimSource } from './shim'
+import { shimBinaries } from './shim-bin'
+import { gunzipSync } from 'node:zlib'
 import * as scripts from './scripts'
 import { resourceNamespace } from './resource-namespace'
 
@@ -179,28 +180,15 @@ export async function provision(server:Server,profile:Profile,protocol:Protocol,
   },keys,log)
 }
 
-const shimHash=createHash('sha256').update(shimSource+shimGoMod).digest('hex')
 export async function installShim(remote:Remote,server:Server) {
-  const ns=resourceNamespace(server),arch=archOf(server)
-  await remote.exec(`install -d -m 755 /usr/local/lib/${ns}/shim-src`)
-  await remote.write(`/usr/local/lib/${ns}/shim-src/main.go`,shimSource,0o644)
-  await remote.write(`/usr/local/lib/${ns}/shim-src/go.mod`,shimGoMod,0o644)
-  await remote.exec(`if [ -x /usr/local/lib/${ns}/shim ] && [ "$(cat /usr/local/lib/${ns}/shim.sha 2>/dev/null || true)" = ${q(shimHash)} ]; then
-  echo up-to-date
-else
-${fetchScript(downloads.go[arch],`/run/${ns}/go.tar.gz`)}
-install -d -m 700 /usr/local/lib/${ns}/toolchain
-tar -xzf /run/${ns}/go.tar.gz -C /usr/local/lib/${ns}/toolchain
-export PATH=/usr/local/lib/${ns}/toolchain/go/bin:$PATH GOTOOLCHAIN=local CGO_ENABLED=0
-export GOCACHE=/usr/local/lib/${ns}/gobuild/cache GOPATH=/usr/local/lib/${ns}/gobuild/path
-cd /usr/local/lib/${ns}/shim-src
-go build -trimpath -o /usr/local/lib/${ns}/shim.new .
-mv -f /usr/local/lib/${ns}/shim.new /usr/local/lib/${ns}/shim
-printf '%s' ${q(shimHash)} > /usr/local/lib/${ns}/shim.sha
-chmod -R u+w /usr/local/lib/${ns}/gobuild /usr/local/lib/${ns}/toolchain 2>/dev/null || true
-rm -rf /usr/local/lib/${ns}/toolchain /usr/local/lib/${ns}/gobuild /run/${ns}/go.tar.gz
-fi
-`,900000,{label:'Сборка UDP-шима',output:'install'})
+  const ns=resourceNamespace(server),arch=archOf(server),bin=shimBinaries[arch],target=`/usr/local/lib/${ns}/shim`
+  const data=gunzipSync(Buffer.from(bin.gz,'base64'))
+  if(createHash('sha256').update(data).digest('hex')!==bin.sha256)throw new Error('Встроенный UDP-шим повреждён')
+  const state=await remote.exec(`if [ -f ${target} ] && printf '%s  %s\\n' ${q(bin.sha256)} ${target} | sha256sum --check --status; then echo ok; else echo missing; fi`)
+  if(state==='ok')return
+  // The shim is a static binary shipped with the app: servers need neither Go nor access to go.dev.
+  await remote.exec(`install -d -m 755 /usr/local/lib/${ns}`)
+  await remote.write(target,data,0o755)
 }
 export async function startShim(remote:Remote,server:Server,unit:string,mode:'entry'|'exit',listen:number,target:string) {
   await installShim(remote,server)

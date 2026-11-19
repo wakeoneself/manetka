@@ -114,6 +114,7 @@ async function execute(method:string,args:unknown[]) {
       case 'repairServer': await controller.repairServer(z.string().parse(args[0]));break
       case 'createConfig': await controller.createConfig(args[0] as ConfigInput);break
       case 'createRoute': await controller.createRoute(args[0] as RouteInput);break
+      case 'repairRoute': await controller.repairRoute(z.string().parse(args[0]));break
       case 'deleteRoute': await controller.deleteRoute(z.string().parse(args[0]));break
       case 'revokeConfig': await controller.revokeConfig(z.string().parse(args[0]));break
       case 'deleteServer': await controller.deleteServer(z.string().parse(args[0]),z.string().parse(args[1]),z.boolean().parse(args[2]));break

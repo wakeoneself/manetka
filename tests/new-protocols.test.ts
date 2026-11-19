@@ -11,6 +11,9 @@ import { hysteriaConfig, hysteriaLink, hysteriaSecret, makeMaterial, shadowsocks
 import * as scripts from '../electron/core/scripts'
 import { routeInputSchema, vaultDataSchema } from '../electron/core/validation'
 import { shimGoMod, shimSource } from '../electron/core/shim'
+import { createHash } from 'node:crypto'
+import { gunzipSync } from 'node:zlib'
+import { shimBinaries, shimSourceSha } from '../electron/core/shim-bin'
 import { fixture } from './fixtures'
 
 const opts={port:8388,sni:'www.microsoft.com',domain:'',path:'/x'}
@@ -88,4 +91,12 @@ test('UDP shim wraps with an 8-byte STUN-like header and unwraps end to end',{sk
     const raw=createSocket('udp4');raw.send(payload,xp,'127.0.0.1');await new Promise(r=>setTimeout(r,300));assert.equal(seen.length,before)
     client.close();raw.close();echo.close();mid.close()
   } finally {for(const p of procs)p.kill();rmSync(dir,{recursive:true,force:true})}
+})
+
+test('embedded shim binaries match the source and are static Linux ELF files',()=>{
+  assert.equal(shimSourceSha,createHash('sha256').update(shimSource+shimGoMod).digest('hex'),'shim.ts changed: run node --import tsx scripts/build-shim.mjs')
+  for(const [arch,b] of Object.entries(shimBinaries)){
+    const data=gunzipSync(Buffer.from(b.gz,'base64'));assert.equal(createHash('sha256').update(data).digest('hex'),b.sha256)
+    assert.deepEqual([...data.subarray(0,4)],[0x7f,0x45,0x4c,0x46]);assert.equal(data.readUInt16LE(18),arch==='amd64'?62:183)
+  }
 })

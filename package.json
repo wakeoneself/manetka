@@ -1,6 +1,6 @@
 {
   "name": "manetka",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "private": true,
   "description": "Локальный менеджер личных VPN-серверов",
   "author": "maNETka",
@@ -21,7 +21,10 @@
     "test:electron": "node scripts/smoke-electron.mjs",
     "test:keys-ui": "node scripts/check-ssh-keys-ui.mjs",
     "test:progress-ui": "node --import tsx scripts/check-provisioning-ui.mjs",
-    "test:vaults-ui": "node scripts/check-vault-files-ui.mjs"
+    "test:vaults-ui": "node scripts/check-vault-files-ui.mjs",
+    "shim": "node --import tsx scripts/build-shim.mjs",
+    "pretest": "node --import tsx scripts/build-shim.mjs --if-missing",
+    "prebuild": "node --import tsx scripts/build-shim.mjs --if-missing"
   },
   "dependencies": {
     "lucide-react": "^0.468.0",
