@@ -9,7 +9,7 @@ permissions:
 
 jobs:
   macos:
-    runs-on: macos-14
+    runs-on: macos-15
     env:
       CSC_IDENTITY_AUTO_DISCOVERY: 'false'
     steps:
